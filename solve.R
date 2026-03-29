@@ -176,26 +176,54 @@ stay_df <- map_dfr(itineraries, function(it) {
   )
 })
 
+# ── Pricing (loaded from CSV) ─────────────────────────────────────────────────
+# prices.csv has origin→destination fares (connections bundled into one price).
+prices <- read_csv("prices.csv", show_col_types = FALSE)
+
+# For each optimal itinerary, the 4 legs are priced as:
+#   date 1: PPT → A,  date 2: A → B,  date 3: B → C,  date 4: C → RFP
+price_lookup <- function(date, from, to) {
+  p <- prices %>% filter(date == !!date, from == !!from, to == !!to)
+  if (nrow(p) == 1) p$price_aud else NA_real_
+}
+
+summary_df <- summary_df %>%
+  rowwise() %>%
+  mutate(
+    price_1 = price_lookup(dates_ordered[1], "PPT",     island_A),
+    price_2 = price_lookup(dates_ordered[2], island_A,  island_B),
+    price_3 = price_lookup(dates_ordered[3], island_B,  island_C),
+    price_4 = price_lookup(dates_ordered[4], island_C,  "RFP"),
+    total_aud = price_1 + price_2 + price_3 + price_4
+  ) %>%
+  ungroup()
+
 # ── Console output ───────────────────────────────────────────────────────────
 min_flights <- min(summary_df$n_flights)
 n_total     <- nrow(summary_df)
-optimal     <- summary_df %>% filter(n_flights == min_flights)
+optimal     <- summary_df %>%
+  filter(n_flights == min_flights) %>%
+  arrange(total_aud)
+
+has_prices <- !all(is.na(optimal$total_aud))
 
 cat(sprintf("Found %d valid itinerary(s) visiting exactly 3 islands.\n", n_total))
 cat(sprintf("Minimum flights: %d\n\n", min_flights))
 
-cat(strrep("=", 65), "\n")
-cat(sprintf(" %d OPTIMAL ITINERARY(S) — %d flights\n", nrow(optimal), min_flights))
-cat(strrep("=", 65), "\n\n")
+cat(strrep("=", 72), "\n")
+cat(sprintf(" %d OPTIMAL ITINERARY(S) — %d flights (ranked by price)\n", nrow(optimal), min_flights))
+cat(strrep("=", 72), "\n\n")
 
 for (i in seq_len(nrow(optimal))) {
   r <- optimal[i, ]
-  cat(sprintf("  #%-3d  Stay: %s → %s → %s   [%s]\n",
-              r$itin_id, r$island_A, r$island_B, r$island_C, r$islands))
-  cat(sprintf("         2-Sep : %-35s → stay %s\n", r$route_A, r$island_A))
-  cat(sprintf("         6-Sep : %-35s → stay %s\n", r$route_B, r$island_B))
-  cat(sprintf("        10-Sep : %-35s → stay %s\n", r$route_C, r$island_C))
-  cat(sprintf("        14-Sep : %-35s → RFP\n", r$route_R))
+  price_tag <- if (!is.na(r$total_aud)) sprintf("$%s AUD", format(r$total_aud, big.mark = ",")) else "price TBD"
+  cat(sprintf("  #%-3d  %s → %s → %s   (%s)\n",
+              r$itin_id, r$island_A, r$island_B, r$island_C, price_tag))
+  fmt_price <- function(p) if (!is.na(p)) sprintf("$%d", p) else "?"
+  cat(sprintf("    %8s : %-28s %6s → stay %s\n", dates_ordered[1], r$route_A, fmt_price(r$price_1), r$island_A))
+  cat(sprintf("    %8s : %-28s %6s → stay %s\n", dates_ordered[2], r$route_B, fmt_price(r$price_2), r$island_B))
+  cat(sprintf("    %8s : %-28s %6s → stay %s\n", dates_ordered[3], r$route_C, fmt_price(r$price_3), r$island_C))
+  cat(sprintf("    %8s : %-28s %6s → RFP\n",     dates_ordered[4], r$route_R, fmt_price(r$price_4)))
   cat("\n")
 }
 
@@ -365,6 +393,49 @@ if (n_total <= 80) {
   ggsave("plot_all_stays.png", p4, width = 10,
          height = max(5, 0.35 * n_total + 2), dpi = 150)
   cat("Saved: plot_all_stays.png\n")
+}
+
+# 5. Price comparison bar chart (optimal itineraries only)
+if (has_prices) {
+  price_data <- optimal %>%
+    select(itin_id, island_A, island_B, island_C,
+           price_1, price_2, price_3, price_4, total_aud) %>%
+    mutate(label = sprintf("%s → %s → %s", island_A, island_B, island_C)) %>%
+    pivot_longer(cols = starts_with("price_"),
+                 names_to = "leg", values_to = "price") %>%
+    mutate(leg = recode(leg,
+      price_1 = dates_ordered[1],
+      price_2 = dates_ordered[2],
+      price_3 = dates_ordered[3],
+      price_4 = dates_ordered[4]
+    )) %>%
+    mutate(leg = factor(leg, levels = dates_ordered))
+
+  p5 <- price_data %>%
+    ggplot(aes(x = reorder(label, total_aud), y = price, fill = leg)) +
+    geom_col() +
+    geom_text(
+      data = optimal %>% mutate(label = sprintf("%s → %s → %s", island_A, island_B, island_C)),
+      aes(x = reorder(label, total_aud), y = total_aud,
+          label = sprintf("$%s", format(total_aud, big.mark = ","))),
+      inherit.aes = FALSE, hjust = -0.1, size = 3.5, fontface = "bold"
+    ) +
+    coord_flip() +
+    scale_fill_brewer(palette = "Dark2", name = "Flight date") +
+    scale_y_continuous(labels = scales::dollar_format(prefix = "$"),
+                       expand = expansion(mult = c(0, 0.2))) +
+    labs(
+      title = "Optimal itineraries ranked by total flight cost (AUD)",
+      subtitle = sprintf("All have %d flights — prices from %s",
+                         min_flights,
+                         format(max(prices$snapshot_date, na.rm = TRUE))),
+      x = NULL, y = "Total flight cost (AUD)"
+    ) +
+    theme_minimal(base_size = 13) +
+    theme(legend.position = "bottom")
+
+  ggsave("plot_prices.png", p5, width = 10, height = max(4, 0.6 * nrow(optimal) + 1.5), dpi = 150)
+  cat("Saved: plot_prices.png\n")
 }
 
 cat("\nDone.\n")
