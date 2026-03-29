@@ -13,53 +13,33 @@
 
 library(tidyverse)
 
-# ── Flight data ──────────────────────────────────────────────────────────────
-flights <- tribble(
-  ~date,       ~from, ~to,
-  "2-Sep",     "PPT", "BOB",
-  "2-Sep",     "PPT", "HUH",
-  "2-Sep",     "PPT", "RGI",
-  "2-Sep",     "PPT", "TIH",
+# ── Flight data (loaded from CSV) ─────────────────────────────────────────────
+flights <- read_csv("flights.csv", show_col_types = FALSE)
 
-  "6-Sep",     "BOB", "RGI",
-  "6-Sep",     "BOB", "HUH",
-  "6-Sep",     "BOB", "PPT",
-  "6-Sep",     "RGI", "FAV",
-  "6-Sep",     "RGI", "TIH",
-  "6-Sep",     "RGI", "PPT",
-  "6-Sep",     "TIH", "RGI",
-  "6-Sep",     "TIH", "PPT",
-  "6-Sep",     "FAV", "PPT",
-  "6-Sep",     "HUH", "BOB",
-  "6-Sep",     "HUH", "PPT",
-  "6-Sep",     "PPT", "RGI",
-  "6-Sep",     "PPT", "TIH",
-  "6-Sep",     "PPT", "HUH",
-  "6-Sep",     "PPT", "BOB",
-
-  "10-Sep",    "BOB", "RGI",
-  "10-Sep",    "BOB", "HUH",
-  "10-Sep",    "BOB", "PPT",
-  "10-Sep",    "RGI", "FAV",
-  "10-Sep",    "RGI", "PPT",
-  "10-Sep",    "TIH", "RGI",
-  "10-Sep",    "FAV", "PPT",
-  "10-Sep",    "HUH", "BOB",
-  "10-Sep",    "HUH", "PPT",
-  "10-Sep",    "PPT", "RGI",
-  "10-Sep",    "PPT", "TIH",
-  "10-Sep",    "PPT", "HUH",
-  "10-Sep",    "PPT", "BOB",
-
-  "14-Sep",    "PPT", "RFP",
-  "14-Sep",    "BOB", "RFP",
-  "14-Sep",    "HUH", "RFP"
-)
-
-dates_ordered <- c("2-Sep", "6-Sep", "10-Sep", "14-Sep")
-stay_labels   <- c("2–5 Sep", "6–9 Sep", "10–13 Sep", "14 Sep →")
 hubs          <- c("PPT", "RFP")
-islands_all   <- c("BOB", "HUH", "RGI", "TIH", "FAV")
+
+# Derive dates (sorted chronologically) and islands from the data
+flights <- flights %>%
+  mutate(date_parsed = dmy(paste0(date, "-2025")))  # year is arbitrary, for sorting
+dates_ordered <- flights %>%
+  distinct(date, date_parsed) %>%
+  arrange(date_parsed) %>%
+  pull(date)
+flights <- flights %>% select(-date_parsed)
+
+islands_all <- sort(unique(c(flights$from, flights$to))) %>% setdiff(hubs)
+
+# Build stay labels from consecutive dates
+date_nums <- dmy(paste0(dates_ordered, "-2025"))
+stay_labels <- map_chr(seq_along(dates_ordered), function(i) {
+  d <- date_nums[i]
+  if (i < length(dates_ordered)) {
+    d_next <- date_nums[i + 1] - days(1)
+    sprintf("%d–%d %s", day(d), day(d_next), month(d, label = TRUE))
+  } else {
+    sprintf("%d %s →", day(d), month(d, label = TRUE))
+  }
+})
 
 # ── Same-day reachability: all (destination, n_flights, leg_list) from start ──
 # DFS with no location revisits within a day.
