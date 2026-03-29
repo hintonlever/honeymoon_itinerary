@@ -199,63 +199,34 @@ summary_df <- summary_df %>%
   ungroup()
 
 # ── Console output ───────────────────────────────────────────────────────────
-min_flights <- min(summary_df$n_flights)
-n_total     <- nrow(summary_df)
-optimal     <- summary_df %>%
-  filter(n_flights == min_flights) %>%
+has_prices <- !all(is.na(summary_df$total_aud))
+n_total    <- nrow(summary_df)
+
+cat(sprintf("Found %d valid itinerary(s) across all island combos.\n\n", n_total))
+
+# For each unique island combo, find the cheapest itinerary
+fmt_price <- function(p) if (!is.na(p)) sprintf("$%d", p) else "?"
+
+best_per_combo <- summary_df %>%
+  group_by(islands) %>%
+  slice_min(total_aud, n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
   arrange(total_aud)
 
-has_prices <- !all(is.na(optimal$total_aud))
+cat(strrep("=", 75), "\n")
+cat(" CHEAPEST ITINERARY PER ISLAND COMBO (ranked by price)\n")
+cat(strrep("=", 75), "\n\n")
 
-cat(sprintf("Found %d valid itinerary(s) visiting exactly 3 islands.\n", n_total))
-cat(sprintf("Minimum flights: %d\n\n", min_flights))
-
-cat(strrep("=", 72), "\n")
-cat(sprintf(" %d OPTIMAL ITINERARY(S) — %d flights (ranked by price)\n", nrow(optimal), min_flights))
-cat(strrep("=", 72), "\n\n")
-
-for (i in seq_len(nrow(optimal))) {
-  r <- optimal[i, ]
+for (i in seq_len(nrow(best_per_combo))) {
+  r <- best_per_combo[i, ]
   price_tag <- if (!is.na(r$total_aud)) sprintf("$%s AUD", format(r$total_aud, big.mark = ",")) else "price TBD"
-  cat(sprintf("  #%-3d  %s → %s → %s   (%s)\n",
-              r$itin_id, r$island_A, r$island_B, r$island_C, price_tag))
-  fmt_price <- function(p) if (!is.na(p)) sprintf("$%d", p) else "?"
-  cat(sprintf("    %8s : %-28s %6s → stay %s\n", dates_ordered[1], r$route_A, fmt_price(r$price_1), r$island_A))
-  cat(sprintf("    %8s : %-28s %6s → stay %s\n", dates_ordered[2], r$route_B, fmt_price(r$price_2), r$island_B))
-  cat(sprintf("    %8s : %-28s %6s → stay %s\n", dates_ordered[3], r$route_C, fmt_price(r$price_3), r$island_C))
-  cat(sprintf("    %8s : %-28s %6s → RFP\n",     dates_ordered[4], r$route_R, fmt_price(r$price_4)))
+  cat(sprintf("  %d. [%s]  %s → %s → %s   %s  (%d flights)\n",
+              i, r$islands, r$island_A, r$island_B, r$island_C, price_tag, r$n_flights))
+  cat(sprintf("     %8s : %-28s %6s → stay %s\n", dates_ordered[1], r$route_A, fmt_price(r$price_1), r$island_A))
+  cat(sprintf("     %8s : %-28s %6s → stay %s\n", dates_ordered[2], r$route_B, fmt_price(r$price_2), r$island_B))
+  cat(sprintf("     %8s : %-28s %6s → stay %s\n", dates_ordered[3], r$route_C, fmt_price(r$price_3), r$island_C))
+  cat(sprintf("     %8s : %-28s %6s → RFP\n",     dates_ordered[4], r$route_R, fmt_price(r$price_4)))
   cat("\n")
-}
-
-# Summary by flight count
-counts <- summary_df %>% count(n_flights, name = "n_itins")
-if (nrow(counts) > 1) {
-  cat(strrep("=", 65), "\n")
-  cat(" ALL VALID — by flight count\n")
-  cat(strrep("=", 65), "\n")
-  for (i in seq_len(nrow(counts))) {
-    tag <- if (counts$n_flights[i] == min_flights) "  ← min" else ""
-    cat(sprintf("  %d flights : %d itinerary(s)%s\n", counts$n_flights[i], counts$n_itins[i], tag))
-  }
-  cat("\n")
-}
-
-# Non-optimal
-non_opt <- summary_df %>% filter(n_flights > min_flights) %>% arrange(n_flights)
-if (nrow(non_opt) > 0) {
-  cat(strrep("=", 65), "\n")
-  cat(" OTHER VALID ITINERARIES\n")
-  cat(strrep("=", 65), "\n\n")
-  for (i in seq_len(nrow(non_opt))) {
-    r <- non_opt[i, ]
-    cat(sprintf("  #%-3d  (%d flights)  Stay: %s → %s → %s\n",
-                r$itin_id, r$n_flights, r$island_A, r$island_B, r$island_C))
-    cat(sprintf("         2-Sep : %-35s → stay %s\n", r$route_A, r$island_A))
-    cat(sprintf("         6-Sep : %-35s → stay %s\n", r$route_B, r$island_B))
-    cat(sprintf("        10-Sep : %-35s → stay %s\n", r$route_C, r$island_C))
-    cat(sprintf("        14-Sep : %-35s → RFP\n", r$route_R))
-    cat("\n")
-  }
 }
 
 # ── Visualisations ───────────────────────────────────────────────────────────
@@ -284,24 +255,28 @@ p1 <- summary_df %>%
 ggsave("plot_flight_counts.png", p1, width = 7, height = 5, dpi = 150)
 cat("Saved: plot_flight_counts.png\n")
 
-# 2. Tile heatmap: overnight location per period (optimal only)
+# 2. Tile heatmap: cheapest itinerary per combo — overnight location per period
+best_ids <- best_per_combo$itin_id
 opt_stays <- stay_df %>%
-  filter(n_flights == min_flights) %>%
+  filter(itin_id %in% best_ids) %>%
+  left_join(best_per_combo %>% select(itin_id, total_aud), by = "itin_id") %>%
   mutate(
     stay  = factor(stay, levels = stay_labels),
-    label = sprintf("#%d: %s → %s → %s", itin_id,
-                    location[date == "2-Sep"], location[date == "6-Sep"],
-                    location[date == "10-Sep"]),
+    label = sprintf("%s → %s → %s  ($%s)",
+                    location[date == dates_ordered[1]],
+                    location[date == dates_ordered[2]],
+                    location[date == dates_ordered[3]],
+                    if (!is.na(total_aud[1])) format(total_aud[1], big.mark = ",") else "TBD"),
     .by = itin_id
   )
 
 p2 <- opt_stays %>%
-  ggplot(aes(x = stay, y = reorder(label, -itin_id), fill = location)) +
+  ggplot(aes(x = stay, y = reorder(label, -total_aud), fill = location)) +
   geom_tile(colour = "white", linewidth = 1.2) +
   geom_text(aes(label = location), size = 3.5, fontface = "bold") +
   scale_fill_brewer(palette = "Set2") +
   labs(
-    title = sprintf("Optimal itineraries (%d flights) — overnight location by period", min_flights),
+    title = "Cheapest itinerary per island combo — overnight location by period",
     x = NULL, y = NULL, fill = "Location"
   ) +
   theme_minimal(base_size = 13) +
@@ -312,43 +287,26 @@ ggsave("plot_optimal_stays.png", p2, width = 10,
        height = max(4, 0.5 * n_opt + 2), dpi = 150)
 cat("Saved: plot_optimal_stays.png\n")
 
-# 3. Route maps: one facet per optimal itinerary, legs coloured by date
+# 3. Route maps: cheapest per combo, legs coloured by date
 opt_legs <- legs_df %>%
-  filter(n_flights == min_flights) %>%
+  filter(itin_id %in% best_ids) %>%
+  left_join(best_per_combo %>% select(itin_id, total_aud), by = "itin_id") %>%
   left_join(coords, by = c("from" = "loc")) %>%
   rename(lon_from = lon, lat_from = lat) %>%
   left_join(coords, by = c("to" = "loc")) %>%
-  rename(lon_to = lon, lat_to = lat)
-
-# Deduplicate visually identical routes (same sequence of legs)
-opt_legs <- opt_legs %>%
-  group_by(itin_id) %>%
-  mutate(route_key = paste(from, to, sep = "-", collapse = "|")) %>%
-  ungroup()
-
-unique_routes <- opt_legs %>%
-  distinct(route_key, .keep_all = FALSE) %>%
-  pull(route_key)
-
-# Keep first itin_id per unique route
-rep_ids <- opt_legs %>%
-  distinct(itin_id, route_key) %>%
-  group_by(route_key) %>%
-  slice_min(itin_id, n = 1) %>%
-  pull(itin_id)
-
-route_legs <- opt_legs %>%
-  filter(itin_id %in% rep_ids) %>%
+  rename(lon_to = lon, lat_to = lat) %>%
   mutate(
     date  = factor(date, levels = dates_ordered),
-    label = paste0("#", itin_id, ": ", islands)
+    label = sprintf("%s  ($%s)",
+                    islands,
+                    if_else(!is.na(total_aud), format(total_aud, big.mark = ","), "TBD"))
   )
 
-n_facets <- n_distinct(route_legs$itin_id)
+n_facets <- n_distinct(opt_legs$itin_id)
 
 p3 <- ggplot() +
   geom_segment(
-    data = route_legs,
+    data = opt_legs,
     aes(x = lon_from, y = lat_from, xend = lon_to, yend = lat_to, colour = date),
     arrow = arrow(length = unit(0.18, "cm"), type = "closed"),
     linewidth = 0.9, alpha = 0.8
@@ -358,7 +316,7 @@ p3 <- ggplot() +
              size = 3, nudge_y = 0.18, linewidth = 0, fill = "white", alpha = 0.8) +
   facet_wrap(~ label, ncol = 3) +
   scale_colour_brewer(palette = "Dark2", name = "Flight date") +
-  labs(title = sprintf("Optimal routes (%d flights) — unique flight sequences", min_flights),
+  labs(title = "Cheapest route per island combo",
        x = "Longitude", y = "Latitude") +
   theme_minimal(base_size = 11) +
   theme(legend.position = "bottom")
@@ -395,12 +353,13 @@ if (n_total <= 80) {
   cat("Saved: plot_all_stays.png\n")
 }
 
-# 5. Price comparison bar chart (optimal itineraries only)
+# 5. Price comparison bar chart — cheapest per island combo
 if (has_prices) {
-  price_data <- optimal %>%
-    select(itin_id, island_A, island_B, island_C,
+  price_data <- best_per_combo %>%
+    filter(!is.na(total_aud)) %>%
+    select(itin_id, islands, island_A, island_B, island_C, n_flights,
            price_1, price_2, price_3, price_4, total_aud) %>%
-    mutate(label = sprintf("%s → %s → %s", island_A, island_B, island_C)) %>%
+    mutate(label = sprintf("%s → %s → %s\n[%s] %df", island_A, island_B, island_C, islands, n_flights)) %>%
     pivot_longer(cols = starts_with("price_"),
                  names_to = "leg", values_to = "price") %>%
     mutate(leg = recode(leg,
@@ -411,11 +370,15 @@ if (has_prices) {
     )) %>%
     mutate(leg = factor(leg, levels = dates_ordered))
 
+  totals <- best_per_combo %>%
+    filter(!is.na(total_aud)) %>%
+    mutate(label = sprintf("%s → %s → %s\n[%s] %df", island_A, island_B, island_C, islands, n_flights))
+
   p5 <- price_data %>%
     ggplot(aes(x = reorder(label, total_aud), y = price, fill = leg)) +
     geom_col() +
     geom_text(
-      data = optimal %>% mutate(label = sprintf("%s → %s → %s", island_A, island_B, island_C)),
+      data = totals,
       aes(x = reorder(label, total_aud), y = total_aud,
           label = sprintf("$%s", format(total_aud, big.mark = ","))),
       inherit.aes = FALSE, hjust = -0.1, size = 3.5, fontface = "bold"
@@ -425,17 +388,45 @@ if (has_prices) {
     scale_y_continuous(labels = scales::dollar_format(prefix = "$"),
                        expand = expansion(mult = c(0, 0.2))) +
     labs(
-      title = "Optimal itineraries ranked by total flight cost (AUD)",
-      subtitle = sprintf("All have %d flights — prices from %s",
-                         min_flights,
+      title = "Cheapest itinerary per island combo (AUD)",
+      subtitle = sprintf("Prices from %s",
                          format(max(prices$snapshot_date, na.rm = TRUE))),
       x = NULL, y = "Total flight cost (AUD)"
     ) +
     theme_minimal(base_size = 13) +
     theme(legend.position = "bottom")
 
-  ggsave("plot_prices.png", p5, width = 10, height = max(4, 0.6 * nrow(optimal) + 1.5), dpi = 150)
+  n_combos <- nrow(totals)
+  ggsave("plot_prices.png", p5, width = 10, height = max(4, 0.6 * n_combos + 1.5), dpi = 150)
   cat("Saved: plot_prices.png\n")
+}
+
+# ── Missing prices report ────────────────────────────────────────────────────
+# For every valid itinerary, check which OD fares are missing from prices.csv
+needed_od <- summary_df %>%
+  rowwise() %>%
+  reframe(
+    date = dates_ordered,
+    from = c("PPT",    island_A, island_B, island_C),
+    to   = c(island_A, island_B, island_C, "RFP")
+  ) %>%
+  distinct()
+
+missing_od <- needed_od %>%
+  anti_join(prices, by = c("date", "from", "to"))
+
+if (nrow(missing_od) > 0) {
+  missing_od <- missing_od %>% arrange(date, from, to)
+  cat(sprintf("\n%s\n", strrep("=", 75)))
+  cat(sprintf(" %d MISSING PRICES in prices.csv\n", nrow(missing_od)))
+  cat(sprintf("%s\n\n", strrep("=", 75)))
+  cat("  date,from,to,price_aud,snapshot_date\n")
+  for (i in seq_len(nrow(missing_od))) {
+    cat(sprintf("  %s,%s,%s,,\n", missing_od$date[i], missing_od$from[i], missing_od$to[i]))
+  }
+  cat("\n")
+} else {
+  cat("\nAll OD pairs are priced.\n")
 }
 
 cat("\nDone.\n")
